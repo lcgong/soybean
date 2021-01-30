@@ -1,0 +1,6 @@
+class InvalidTopicName(Exception):
+    ...
+
+class InvalidGroupId(Exception):
+    ...
+
