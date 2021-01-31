@@ -1,20 +1,30 @@
-from typing import Callable, Awaitable, Any, List, Dict
-from asyncio import run_coroutine_threadsafe
 
+from asyncio import run_coroutine_threadsafe
 from rocketmq.client import PushConsumer, ConsumeStatus
+from typing import Callable, Awaitable, Any, List, Dict
 
 from .utils import check_group_id
 
+
+
 class Subscription:
     def __init__(self, topic: str, expression: str,
-                 handler: Callable[..., Awaitable[Any]],
-                 depth: int = 0):
+                 handler: Callable[..., Awaitable[Any]]):
 
         self._topic = topic
         self._expression = expression
         self._handler = handler
-        self._decorated_depth = depth
+        
         self._consumer = None
+
+        # _registry 主要确定handler，subscription层数
+        handler_subscriptions = _registry.get(handler)
+        if handler_subscriptions is None:
+            handler_subscriptions = []
+            _registry[handler] = handler_subscriptions
+
+        self._decorated_depth = len(handler_subscriptions)
+        handler_subscriptions.append(self)
 
 
     def subscribe(self, prefix, host, loop):
@@ -48,6 +58,7 @@ class Subscription:
             self._consumer.shutdown()
             self._consumer = None
 
+_registry: Dict[Callable[..., Awaitable[Any]], List[Subscription]] = {}
 
 
 def _subscribe_handler(loop, consumer, topic, expression, handler):

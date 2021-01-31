@@ -1,6 +1,10 @@
 import asyncio
 from typing import Callable, Awaitable, Any, List, Dict
+from typing import ForwardRef
 
+from .subscription import Subscription
+from .utils import check_topic_name
+from .messenger import Messenger
 
 """
 在消息队列中，GroupId目的维持在并发条件下消费位点(offset)的一致性。
@@ -12,61 +16,46 @@ from typing import Callable, Awaitable, Any, List, Dict
 
 
 消息处理函数位置作为和主题和tag定义作为一个唯一的group_id。
+
 """
 
-from .subscription import Subscription
-from .utils import check_topic_name
 
-
-_registry: Dict[Callable[..., Awaitable[Any]], List[Subscription]] = {}
+_TopicPort = ForwardRef("_TopicPort")
 
 
 class RocketMQChannel:
 
-    def __init__(self, name, host: str = None) -> None:
+    def __init__(self, name: str, host: str = None) -> None:
         self._channel_name = name
         self._name_srv_addrs = host
         self._subscriptions = []
+        self._messenger = Messenger(self)
 
-    @property
-    def channel_name(self):
-        return self._channel_name
-
-    def topic(self, name: str):
+    def topic(self, name: str) -> _TopicPort:
         check_topic_name(name)
 
         return _TopicPort(self, name)
 
-    def subscribe(self, topic: str, expression: str = '*'):
+    async def start(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._messenger._loop = loop
 
-        def _decorator(handler: Callable[..., Awaitable[Any]]):
-
-            handler_subscriptions = _registry.get(handler)
-            if handler_subscriptions is None:
-                handler_subscriptions = []
-                _registry[handler] = handler_subscriptions
-
-            subscription = Subscription(topic, expression, handler, len(handler_subscriptions))
-            handler_subscriptions.append(subscription)
-            self._subscriptions.append(subscription)
-
-            return handler
-
-        return _decorator
-
-    async def start(self):
         if len(self._subscriptions) == 0:
             return
 
-        loop = asyncio.get_running_loop()
         for listener in self._subscriptions:
             listener.subscribe("demo", self._name_srv_addrs, loop)
 
+        
+
         print("started")
 
-    async def stop(self):
+    async def stop(self) -> None:
         for listener in self._subscriptions:
             listener.unsubscribe()
+
+        await self._messenger.stop()
+
         print("stopped")
 
     async def __aenter__(self):
@@ -75,6 +64,8 @@ class RocketMQChannel:
     async def __aexit__(self, exec_type, value, traceback):
         await self.stop()
 
+# import typing as t
+# JSONType = t.Union[str, int, float, bool, None, t.Dict[str, t.Any], t.List[t.Any]]
 
 
 class _TopicPort:
@@ -83,9 +74,28 @@ class _TopicPort:
         self._topic = topic
 
     def listen(self, expression: str = "*") -> Any:
-        def _decorator(handler: Callable[..., Awaitable[Any]]): 
-            return self._channel.subscribe(self._topic, expression)(handler)
-        
+        def _decorator(handler: Callable[..., Awaitable[Any]]):
+            subscription = Subscription(self._topic, expression, handler)
+            self._channel._subscriptions.append(subscription)
+
+            return handler
+
         return _decorator
 
+    def send_json(self, msg: Any,
+                  key: str = None,
+                  tag: str = None,
+                  orderly=False,
+                  props: Dict[str, str] = None):
 
+        messenger = self._channel._messenger
+        messenger.send_json(self._topic, msg,
+                            key=key,
+                            tag=tag,
+                            orderly=orderly,
+                            props=props)
+
+    def send_transaction(self, sqlblk, tag=None):
+        messenger = self._channel._messenger
+
+        return messenger.send_transaction(sqlblk, self._topic, tag=tag)

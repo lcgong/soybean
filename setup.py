@@ -4,16 +4,15 @@ import setuptools.command.test
 
 setuptools.setup(
     name='soybean',
-    version='0.0.1',
-    license="BSD",
+    version='0.0.2',
+    license='http://www.apache.org/licenses/LICENSE-2.0',
     description='A tiny message-queue application framwork',
     author='Chenggong Lyu',
     author_email='lcgong@gmail.com',
     url='https://github.com/lcgong/soybean',
     packages=setuptools.find_packages("."),
-    # package_dir = {"": "."},
-    zip_safe=False,
     install_requires=[
+        "rocketmq-client-python>=2.0.0",
         "sqlblock>=0.6.5",
     ],
     classifiers=[
