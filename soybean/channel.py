@@ -5,6 +5,7 @@ from typing import ForwardRef
 from .subscription import Subscription
 from .utils import check_topic_name
 from .messenger import Messenger
+from .typing import HandlerType
 
 """
 在消息队列中，GroupId目的维持在并发条件下消费位点(offset)的一致性。
@@ -18,7 +19,6 @@ from .messenger import Messenger
 消息处理函数位置作为和主题和tag定义作为一个唯一的group_id。
 
 """
-
 
 _TopicPort = ForwardRef("_TopicPort")
 
@@ -44,7 +44,7 @@ class RocketMQChannel:
             return
 
         for listener in self._subscriptions:
-            listener.subscribe("demo", self._name_srv_addrs, loop)
+            listener.subscribe(self._channel_name, self._name_srv_addrs, loop)
 
         
 
@@ -73,8 +73,8 @@ class _TopicPort:
         self._channel = channel
         self._topic = topic
 
-    def listen(self, expression: str = "*") -> Any:
-        def _decorator(handler: Callable[..., Awaitable[Any]]):
+    def react(self, expression: str = "*") -> Any:
+        def _decorator(handler: HandlerType):
             subscription = Subscription(self._topic, expression, handler)
             self._channel._subscriptions.append(subscription)
 
@@ -95,7 +95,7 @@ class _TopicPort:
                             orderly=orderly,
                             props=props)
 
-    def send_transaction(self, sqlblk, tag=None):
+    def action(self, tag=None, orderly=False):
         messenger = self._channel._messenger
 
-        return messenger.send_transaction(sqlblk, self._topic, tag=tag)
+        return messenger.send_in_transaction(self._topic, tag=tag, orderly=orderly)

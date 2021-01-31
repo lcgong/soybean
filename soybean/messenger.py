@@ -12,6 +12,7 @@ from .utils import make_group_id
 from .exceptions import SendingError, TrasnactionPreparingError
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from .typing import HandlerType
 
 
 class Messenger:
@@ -70,25 +71,41 @@ class Messenger:
 
         return (ret.msg_id, ret.offset)
 
-    def send_transaction(self, sqlblock_conn, topic, tag=None, props=None):
-        
+    def send_in_transaction(self, topic, tag=None, orderly=False, props=None):
+
         def _decorator(handler):
-            executor = TransactionExecutor(handler, self, sqlblock_conn, topic, tag, props)
 
-            async def _wrapped_handler(*args, **kwargs):
-                return await executor.execute(*args, **kwargs)
-        
-            def _rechecker_decorator(handler):
-                executor._rechecker = handler
+            sqlblock_meta = getattr(handler, "__sqlblock_meta__", None)
+            if sqlblock_meta is not None:
+                # transactional action
+                action = TransactionalAction(
+                    self,
+                    sqlblock_meta._wrapped_func,
+                    sqlblock_meta._database,
+                    topic, tag, props)
 
+                async def _wrapped_action(*args, **kwargs):
+                    return await action.execute(*args, **kwargs)
 
-            setattr(_wrapped_handler, "recheck", _rechecker_decorator)
-            update_func_wrapper(_wrapped_handler, handler)
-            
-            return _wrapped_handler
+                def _rechecker_decorator(handler):
+                    action._rechecker = handler
+
+                setattr(_wrapped_action, "recheck", _rechecker_decorator)
+                update_func_wrapper(_wrapped_action, handler)
+                return _wrapped_action
+
+            else:
+                # the simple action
+                action = SimpleAction(self, handler, topic, tag,
+                                      orderly=orderly, props=props)
+
+                async def _wrapped_action(*args, **kwargs):
+                    return await action.execute(*args, **kwargs)
+
+                update_func_wrapper(_wrapped_action, handler)
+                return _wrapped_action
 
         return _decorator
-
 
     async def start(self):
         ...
@@ -98,14 +115,63 @@ class Messenger:
             producer.shutdown()
 
 
-class TransactionExecutor:
+class SimpleAction:
 
-    def __init__(self, handler, messenger: Messenger, sqlblock_conn, topic, tag=None, props=None):
+    def __init__(self,
+                 messenger: Messenger,
+                 handler: HandlerType,
+                 topic: str,
+                 tag: str = None,
+                 orderly: bool = False,
+                 props=None):
+
+        self._handler = handler
+        self._messenger = messenger
+        self._topic = topic
+        self._tag = tag
+        self._orderly = orderly
+        self._props = props
+
+    def get_producer(self):
+        return self._messenger._get_producer(orderly=self._orderly)
+
+    async def execute(self, *handler_args, **handler_kwargs):
+        ret_val = await self._handler(*handler_args, **handler_kwargs)
+
+        msg = make_action_msg(ret_val, self._topic, self._tag)
+        try:
+            ret = self.get_producer().send_sync(msg)
+        except Exception as exc:
+            raise TrasnactionPreparingError(str(exc)) from exc
+
+        ret_status = ret.status
+        if ret_status == SendStatus.OK:
+            return ret_val
+
+        if ret_status == SendStatus.FLUSH_DISK_TIMEOUT:
+            raise TrasnactionPreparingError("flush disk timeout")
+        elif ret_status == SendStatus.FLUSH_SLAVE_TIMEOUT:
+            raise TrasnactionPreparingError("flush slave timeout")
+        elif ret_status == SendStatus.SLAVE_NOT_AVAILABLE:
+            raise TrasnactionPreparingError("slave not available")
+        else:
+            raise TrasnactionPreparingError("unknow send status code")
+
+class TransactionalAction:
+
+    def __init__(self,
+                 messenger: Messenger,
+                 handler: HandlerType,
+                 sqlblock_database,
+                 topic: str,
+                 tag: str = None,
+                 props=None):
+
         self._handler = handler
         self._rechecker = None
 
         self._messenger = messenger
-        self._sqlblock_conn = sqlblock_conn
+        self._sqlblock_database = sqlblock_database
         self._topic = topic
         self._tag = tag
         self._props = props
@@ -130,7 +196,7 @@ class TransactionExecutor:
             try:
                 is_success = future.result()
                 if not isinstance(is_success, bool):
-                    print("rechecker should return a True or False value")    
+                    print("rechecker should return a True or False value")
                     return TransactionStatus.UNKNOWN
 
                 if is_success:
@@ -150,11 +216,11 @@ class TransactionExecutor:
         self._producer = producer
         return producer
 
-
     async def execute(self, *handler_args, **handler_kwargs):
-        message = TransactionMessage(self)
+        message = TransactionalMessage(self)
+        print(333, self._sqlblock_database)
 
-        @self._sqlblock_conn.transaction
+        @self._sqlblock_database.transaction
         async def _transactional_handler():
             # 在事务内执行内在逻辑
             result = await self._handler(*handler_args, **handler_kwargs)
@@ -176,25 +242,11 @@ async def _default_rechecker(msg):
 producer_executor = ThreadPoolExecutor(max_workers=5)
 
 
-class TransactionMessage:
-    def __init__(self, executor: TransactionExecutor):
+class TransactionalMessage:
+    def __init__(self, executor: TransactionalAction):
         self._executor = executor
-        self.prepared = False
-
-        self._lock = threading.Lock()
-        self._event = threading.Event()
-        self._transaction_status = TransactionStatus.UNKNOWN
-
-    def get_transaction_status(self):
-        self._event.wait()
-        with self._lock:
-            return self._transaction_status
-
-    def set_transaction_status(self, status):
-        with self._lock:
-            self._transaction_status = status
-
-        self._event.set()
+        self._transaction_status = ThreadingEventValue(
+            TransactionStatus.UNKNOWN)
 
     async def prepare(self, action_result):
 
@@ -217,7 +269,7 @@ class TransactionMessage:
             def _local_execute(msg, user_args):
                 run_coroutine_threadsafe(prepared.set(SendStatus.OK), loop)
                 # return TransactionStatus.UNKNOWN
-                return self.get_transaction_status()
+                return self._transaction_status.wait()
 
             try:
                 ret = producer.send_message_in_transaction(
@@ -227,7 +279,7 @@ class TransactionMessage:
 
             except Exception as exc:
                 run_coroutine_threadsafe(prepared.set(exc), loop)
-        
+
         producer = self._executor.get_producer()
         producer_executor.submit(_send_transaction_message, producer)
 
@@ -245,10 +297,32 @@ class TransactionMessage:
             raise TrasnactionPreparingError(str(send_status))
 
     async def confirm(self):
-        self.set_transaction_status(TransactionStatus.COMMIT)
+        self._transaction_status.set(TransactionStatus.COMMIT)
 
     def exception(self, exc):
-        self.set_transaction_status(TransactionStatus.ROLLBACK)
+        self._transaction_status.set(TransactionStatus.ROLLBACK)
+
+
+class ThreadingEventValue:
+
+    def __init__(self, initial=None):
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._value = initial
+
+    def wait(self):
+        self._event.wait()
+        with self._lock:
+            return self._value
+
+    def get(self):
+        with self._lock:
+            return self._value
+
+    def set(self, value):
+        with self._lock:
+            self._value = value
+            self._event.set()
 
 
 class AsyncEventValue:
@@ -271,7 +345,12 @@ class AsyncEventValue:
         async with self._lock:
             self._value = value
             self._event.set()
-        print("SET_EVENT: ", value)
+        # print("SET_EVENT: ", value)
+
+
+def make_action_msg(result, topic, tag):
+    msg_key = None
+    return create_jsonobj_msg(topic, result, msg_key, tag)
 
 
 def create_jsonobj_msg(topic, jsonobj, key=None, tag=None, props=None):

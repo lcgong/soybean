@@ -4,12 +4,12 @@ from rocketmq.client import PushConsumer, ConsumeStatus
 from typing import Callable, Awaitable, Any, List, Dict
 
 from .utils import check_group_id
-
+from .typing import HandlerType
 
 
 class Subscription:
     def __init__(self, topic: str, expression: str,
-                 handler: Callable[..., Awaitable[Any]]):
+                 handler: HandlerType):
 
         self._topic = topic
         self._expression = expression
