@@ -3,7 +3,8 @@ import re
 import os
 import socket
 from sys import modules
-
+from sqlblock.utils.json import json_dumps
+from rocketmq.client import Message
 
 from .exceptions import InvalidGroupId, InvalidTopicName
 
@@ -12,6 +13,22 @@ VALID_NAME_STR = (
     "allowing only numbers, uppercase and lowercase letters," 
     " '%', '|', '-' and '_' symbols"
 )
+
+def create_jsonobj_msg(topic, jsonobj, key=None, tag=None, props=None):
+    msg_obj = Message(topic)
+    if isinstance(key, str):
+        msg_obj.set_keys(key.encode("utf-8"))
+
+    if isinstance(tag, str):
+        msg_obj.set_tags(tag.encode("utf-8"))
+
+    if isinstance(props, dict):
+        for k, v in props.items():
+            msg_obj.set_property(k, v)
+
+    msg_obj.set_body(json_dumps(jsonobj).encode("utf-8"))
+
+    return msg_obj
 
 
 def check_topic_name(name):
@@ -34,12 +51,14 @@ def check_group_id(name):
     if len(name) > 255:
         raise InvalidGroupId("the group_id is longer than name max length 255.")
 
-def make_group_id(prefix, handler, sn=0):
+def make_group_id(channel_name, handler_func, depth=None):
 
-    module_name = handler.__module__.replace(".", "%")
-    func_name = handler.__qualname__.replace(".", "%")
+    module_name = handler_func.__module__.replace(".", "-")
+    func_name = handler_func.__qualname__.replace(".", "-")
 
-    return f"{prefix}%{module_name}%{func_name}-{sn}"
+    depth = f"-{depth}" if depth is not None else ""
+    
+    return f"{channel_name}%{module_name}-{func_name}{depth}"
 
 
 def make_instance_id():

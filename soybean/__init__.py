@@ -1,3 +1,3 @@
 
 
-from .channel import RocketMQChannel
+from soybean.channel import RocketMQChannel

@@ -19,7 +19,7 @@ async def biz_action1():
     for i in range(8):
         msg = {"name": f"name-{i:03d}"}
         tag = "提交订单" if i % 2 == 0 else "Pay"
-        order_topic.send_json(msg, key=f"P{i:03d}", tag=tag)
+        await order_topic.send(msg, key=f"P{i:03d}", tag=tag, orderly=True)
 
 async def main():
     async with channel:

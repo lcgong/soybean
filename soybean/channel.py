@@ -1,11 +1,16 @@
 import asyncio
 from typing import Callable, Awaitable, Any, List, Dict
 from typing import ForwardRef
+import functools
 
-from .subscription import Subscription
+from .reactor import Reactor
 from .utils import check_topic_name
-from .messenger import Messenger
+# from .messenger import Messenger
 from .typing import HandlerType
+from .action.simple import SendingAction, SimpleAction
+from .action.transactional import TransactionalAction
+from soybean import reactor
+
 
 """
 在消息队列中，GroupId目的维持在并发条件下消费位点(offset)的一致性。
@@ -20,43 +25,68 @@ from .typing import HandlerType
 
 """
 
-_TopicPort = ForwardRef("_TopicPort")
+TopicChannel = ForwardRef("_TopicPort")
 
 
-class RocketMQChannel:
+class Channel:
+    __slots__ = (
+        "_name",
+        "_namesrv_addr",
+        "_producers",
+        "_reactors",
+        "_loop",
+    )
 
-    def __init__(self, name: str, host: str = None) -> None:
-        self._channel_name = name
-        self._name_srv_addrs = host
-        self._subscriptions = []
-        self._messenger = Messenger(self)
+    def __init__(self, name, namesrv_addr):
+        self._name = name
+        self._namesrv_addr = namesrv_addr
+        self._producers = {}
+        self._reactors = {}
 
-    def topic(self, name: str) -> _TopicPort:
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def namesrv_addr(self):
+        return self._namesrv_addr
+
+    def topic(self, name: str) -> TopicChannel:
         check_topic_name(name)
 
-        return _TopicPort(self, name)
+        return TopicChannel(self, topic=name)
 
-    async def start(self) -> None:
-        loop = asyncio.get_running_loop()
-        self._messenger._loop = loop
+    def get_producer(self, group_id):
+        return self._producers.get(group_id)
 
-        if len(self._subscriptions) == 0:
-            return
+    def get_reactor(self, group_id):
+        return self._reactors.get(group_id)
 
-        for listener in self._subscriptions:
-            listener.subscribe(self._channel_name, self._name_srv_addrs, loop)
+    def register_producer(self, group_id, producer):
+        self._producers[group_id] = producer
 
-        
+    def register_reactor(self, group_id, reactor):
+        self._reactors[group_id] = reactor
 
-        print("started")
+    def get_running_loop(self):
+        return self._loop
 
-    async def stop(self) -> None:
-        for listener in self._subscriptions:
-            listener.unsubscribe()
+    async def start(self):
+        self._loop = asyncio.get_running_loop()
 
-        await self._messenger.stop()
+        for reactor in self._reactors.values():
+            await reactor.start()
 
-        print("stopped")
+        for producer in self._producers.values():
+            producer.start()
+
+    async def stop(self):
+
+        for reactor in self._reactors.values():
+            await reactor.stop()
+
+        for producer in self._producers.values():
+            producer.shutdown()
 
     async def __aenter__(self):
         await self.start()
@@ -64,38 +94,72 @@ class RocketMQChannel:
     async def __aexit__(self, exec_type, value, traceback):
         await self.stop()
 
-# import typing as t
-# JSONType = t.Union[str, int, float, bool, None, t.Dict[str, t.Any], t.List[t.Any]]
 
+class RocketMQChannel(Channel):
+    ...
 
-class _TopicPort:
-    def __init__(self,  channel: RocketMQChannel, topic: str):
+class TopicChannel:
+    def __init__(self,  channel: Channel, topic: str):
         self._channel = channel
         self._topic = topic
 
     def react(self, expression: str = "*") -> Any:
         def _decorator(handler: HandlerType):
-            subscription = Subscription(self._topic, expression, handler)
-            self._channel._subscriptions.append(subscription)
 
-            return handler
+            reactors = getattr(handler, "__reactors__", None)
+            if reactors is None:
+                reactors = []
+                setattr(handler, "__reactors__", reactors)
+
+            reactor = Reactor(self._channel,
+                              self._topic, expression,
+                              handler, depth=len(reactors))
+            self._channel.register_reactor(reactor.reactor_id, reactor)
 
         return _decorator
 
-    def send_json(self, msg: Any,
-                  key: str = None,
-                  tag: str = None,
-                  orderly=False,
-                  props: Dict[str, str] = None):
+    async def send(self, msg: Any,
+             key: str = None,
+             tag: str = None,
+             orderly=False,
+             props: Dict[str, str] = None):
 
-        messenger = self._channel._messenger
-        messenger.send_json(self._topic, msg,
-                            key=key,
-                            tag=tag,
-                            orderly=orderly,
-                            props=props)
+        action = SendingAction(self._channel,
+                               self._topic, tag,
+                               orderly=orderly, props=props)
+        await action.send(msg)
 
-    def action(self, tag=None, orderly=False):
-        messenger = self._channel._messenger
+    def action(self, tag=None, orderly=False, props=None):
+        def _decorator(handler):
 
-        return messenger.send_in_transaction(self._topic, tag=tag, orderly=orderly)
+            sqlblock_meta = getattr(handler, "__sqlblock_meta__", None)
+            if sqlblock_meta is not None:
+                # transactional action
+                action = TransactionalAction(
+                    self._channel,
+                    sqlblock_meta._wrapped_func,
+                    sqlblock_meta._database,
+                    self._topic, tag, props)
+
+                async def _wrapped_action(*args, **kwargs):
+                    return await action.execute(*args, **kwargs)
+
+                def _rechecker_decorator(handler):
+                    action._rechecker = handler
+
+                setattr(_wrapped_action, "recheck", _rechecker_decorator)
+                functools.update_wrapper(_wrapped_action, handler)
+                return _wrapped_action
+
+            else:
+                # the simple action
+                action = SimpleAction(self._channel, handler, self._topic, tag,
+                                      orderly=orderly, props=props)
+
+                async def _wrapped_action(*args, **kwargs):
+                    return await action.execute(*args, **kwargs)
+
+                functools.update_wrapper(_wrapped_action, handler)
+                return _wrapped_action
+
+        return _decorator

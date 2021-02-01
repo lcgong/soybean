@@ -7,5 +7,8 @@ class InvalidGroupId(Exception):
 class SendingError(Exception):
     ...
 
-class TrasnactionPreparingError(Exception):
+class ActionError(Exception):
+    ...
+
+class TrasnactionPreparingError(ActionError):
     ...
