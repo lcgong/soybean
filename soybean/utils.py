@@ -3,7 +3,7 @@ import re
 import os
 import socket
 from sys import modules
-from sqlblock.utils.json import json_dumps
+from sqlblock.utils.json import json_dumps, json_loads
 from rocketmq.client import Message
 
 from .exceptions import InvalidGroupId, InvalidTopicName

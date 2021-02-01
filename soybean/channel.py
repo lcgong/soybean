@@ -5,11 +5,9 @@ import functools
 
 from .reactor import Reactor
 from .utils import check_topic_name
-# from .messenger import Messenger
 from .typing import HandlerType
 from .action.simple import SendingAction, SimpleAction
 from .action.transactional import TransactionalAction
-from soybean import reactor
 
 
 """

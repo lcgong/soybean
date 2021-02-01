@@ -6,13 +6,13 @@ channel = RocketMQChannel("demo", "127.0.0.1:9876")
 order_topic = channel.topic("MyOrder")
 
 @order_topic.react("提交订单")
-async def commit_order(msg_id, msg):
-    print(f"A: got message '{msg_id}': {msg}")
+async def commit_order(msg_id, message):
+    print(f"A: got message '{msg_id}': {message}")
 
 
 @order_topic.react("Pay")
-async def pay_order(msg_id, msg):
-    print(f"B: got message '{msg_id}': {msg}")
+async def pay_order(msg_id, message):
+    print(f"B: got message '{msg_id}': {message}")
 
 
 async def biz_action1():

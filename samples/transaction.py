@@ -9,12 +9,12 @@ dbconn = AsyncPostgresSQL(dsn="postgresql://postgres@localhost/postgres")
 order_topic = channel.topic("Order")
 
 @order_topic.react("Commit")
-async def on_order_commiting(msg_id, msg):
-    print(f"Commit: got message '{msg_id}': {msg}")
+async def on_order_commiting(message_id, message):
+    print(f"Commit: got message '{message_id}': {message}")
 
 @order_topic.react("Reviewed")
-async def on_order_reviewed(msg_id, msg):
-    print(f"Reviewed: got message '{msg_id}': {msg}")
+async def on_order_reviewed(message_id, message: bytes):
+    print(f"Reviewed: got message '{message_id}': {message}")
 
 # message.putUserProperties(PropertyKeyConst.CheckImmunityTimeInSeconds,"120")
 
