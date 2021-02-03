@@ -1,9 +1,9 @@
 import asyncio
-from soybean import RocketMQChannel
+from soybean import RocketMQ
 
 from sqlblock import AsyncPostgresSQL
 
-channel = RocketMQChannel("demo", "127.0.0.1:9876")
+channel = RocketMQ("demo", "127.0.0.1:9876")
 dbconn = AsyncPostgresSQL(dsn="postgresql://postgres@localhost/postgres")
 
 order_topic = channel.topic("Order")

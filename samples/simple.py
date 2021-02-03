@@ -1,7 +1,7 @@
 import asyncio
-from soybean import RocketMQChannel
+from soybean import RocketMQ
 
-channel = RocketMQChannel("demo", "127.0.0.1:9876")
+channel = RocketMQ("demo", "127.0.0.1:9876")
 
 order_topic = channel.topic("MyOrder")
 
