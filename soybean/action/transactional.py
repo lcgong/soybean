@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from ..typing import HandlerType
 from ..exceptions import TrasnactionPreparingError
 from ..utils import make_group_id
+from ..event import ThreadingEventValue, AsyncEventValue
 from . import make_action_msg
-from .event import ThreadingEventValue, AsyncEventValue
 
 producer_executor = ThreadPoolExecutor(max_workers=5)
 
