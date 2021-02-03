@@ -14,6 +14,7 @@ setuptools.setup(
     install_requires=[
         "rocketmq-client-python>=2.0.0",
         "sqlblock>=0.6.5",
+        "pypinyin>=0.40.0",
     ],
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
